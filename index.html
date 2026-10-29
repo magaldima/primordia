@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Primordia</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">Primordia</div>
+      <div class="scenario-title" id="scenarioTitle"></div>
+      <div class="chips" id="chips"></div>
+      <button class="primary" id="newGameBtn">New world</button>
+    </header>
+
+    <div class="layout">
+      <aside class="panel left">
+        <section>
+          <h3>Time</h3>
+          <div class="row">
+            <button id="playBtn" class="primary wide">▶ Play</button>
+            <button id="stepBtn" title="Advance one tick">Step</button>
+          </div>
+          <div class="row" style="margin-top:6px">
+            <button id="restartBtn" class="wide" title="Same initial conditions, same seed: an identical replay in instinct mode">↺ Replay</button>
+            <button id="reseedBtn" class="wide" title="Same initial conditions, different random seed">↺ New seed</button>
+          </div>
+          <label class="slider">Speed <span id="speedLabel"></span>
+            <input type="range" id="speed" min="0" max="8" step="1" value="3" />
+          </label>
+        </section>
+
+        <section id="observeNote" hidden>
+          <h3>Observation mode</h3>
+          <p class="hint">This world can't be touched once it starts. Creeds and laws of nature lock after the first tick. Replay or reseed to explore how starting conditions shape what emerges.</p>
+        </section>
+
+        <section id="foundersPanel" hidden>
+          <h3>Founders</h3>
+          <p class="hint">Edit each founder's creed before pressing Play.</p>
+          <div id="foundersList"></div>
+        </section>
+
+        <section id="godTools">
+          <h3>Hand of god</h3>
+          <div class="tools" id="tools"></div>
+          <div id="toolOptions"></div>
+          <label class="slider">Brush <span id="brushLabel"></span>
+            <input type="range" id="brush" min="1" max="15" step="1" value="5" />
+          </label>
+        </section>
+
+        <section id="godVoice">
+          <h3>Voice of god</h3>
+          <textarea id="proclaimText" rows="2" placeholder="A comet blazes across the sky…"></textarea>
+          <button id="proclaimBtn" class="wide">Proclaim to all minds</button>
+          <p class="hint">Every agent hears this the next time it thinks.</p>
+        </section>
+
+        <section>
+          <h3>Minds</h3>
+          <div id="mindControls"></div>
+          <div class="mind-status" id="mindStatus"></div>
+        </section>
+
+        <section>
+          <h3>Laws of nature</h3>
+          <div id="ruleControls"></div>
+        </section>
+      </aside>
+
+      <main class="stage">
+        <div class="stage-bar">
+          <label>Color by
+            <select id="colorMode">
+              <option value="tribe">Tribe</option>
+              <option value="aggression">Aggression</option>
+              <option value="cooperation">Cooperation</option>
+              <option value="curiosity">Curiosity</option>
+              <option value="fertility">Fertility</option>
+              <option value="caution">Caution</option>
+              <option value="greed">Greed</option>
+              <option value="energy">Energy</option>
+              <option value="age">Age</option>
+            </select>
+          </label>
+          <label><input type="checkbox" id="trails" /> Trails</label>
+          <div class="banner" id="banner" hidden></div>
+        </div>
+        <div class="board-wrap"><canvas id="board"></canvas></div>
+      </main>
+
+      <aside class="panel right">
+        <nav class="tabs" id="tabs">
+          <button data-tab="inspect" class="active">Inspector</button>
+          <button data-tab="chronicle">Chronicle</button>
+          <button data-tab="charts">Charts</button>
+        </nav>
+        <div class="tab" id="tab-inspect"></div>
+        <div class="tab" id="tab-chronicle" hidden>
+          <div class="filters" id="logFilters"></div>
+          <ol class="log" id="log"></ol>
+        </div>
+        <div class="tab" id="tab-charts" hidden>
+          <h4>Population</h4>
+          <div class="chart"><canvas id="chartPop"></canvas></div>
+          <h4>Average temperament</h4>
+          <div class="chart"><canvas id="chartTraits"></canvas></div>
+          <h4>Tribes</h4>
+          <div class="chart"><canvas id="chartTribes"></canvas></div>
+        </div>
+      </aside>
+    </div>
+
+    <dialog id="newGame">
+      <form method="dialog" class="modal">
+        <header>
+          <h2>Create a world</h2>
+          <button value="cancel" class="ghost" aria-label="Close">✕</button>
+        </header>
+        <nav class="tabs" id="ngTabs">
+          <button type="button" data-ng="prompt" class="active">Describe it</button>
+          <button type="button" data-ng="presets">Presets</button>
+          <button type="button" data-ng="petri">Petri dish</button>
+          <button type="button" data-ng="random">Random</button>
+        </nav>
+
+        <div class="ng" id="ng-prompt">
+          <p class="hint">Describe a moment in history, or invent one. Claude designs the map, peoples, creeds and the shocks to come.</p>
+          <textarea id="scenarioPrompt" rows="4" placeholder="The Mongol expansion across the Eurasian steppe, 1206"></textarea>
+          <div class="examples" id="examples"></div>
+          <div class="row">
+            <button type="button" id="generateBtn" class="primary">Generate with Claude</button>
+            <span class="hint" id="generateStatus"></span>
+          </div>
+          <div id="scenarioPreview"></div>
+          <div id="savedScenarios"></div>
+        </div>
+
+        <div class="ng" id="ng-presets" hidden>
+          <div class="cards" id="presetCards"></div>
+        </div>
+
+        <div class="ng" id="ng-petri" hidden>
+          <p class="hint">A Conway-style experiment: an empty, even box with no seasons, disasters or divine meddling. Choose the founders and where they start, then watch which patterns emerge.</p>
+          <div class="petri-grid" id="petriSettings"></div>
+          <div class="founders" id="petriFounders"></div>
+          <button type="button" id="petriStart" class="primary">Start experiment</button>
+        </div>
+
+        <div class="ng" id="ng-random" hidden>
+          <p class="hint">A procedurally generated landscape and four tribes with random temperaments and a shared survival creed.</p>
+          <div id="randomControls"></div>
+          <button type="button" id="randomStart" class="primary">Start random world</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
