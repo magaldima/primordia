@@ -1,4 +1,5 @@
 import type { HazardKind, Rect, Terrain } from "../../shared/types";
+import { SEASON_PERIOD } from "../../shared/truths";
 import { Rng } from "./rng";
 
 export interface TerrainInfo {
@@ -31,7 +32,7 @@ export interface Hazard {
 
 /** Seasons swing food regrowth by +/- this fraction over SEASON_PERIOD ticks. */
 export const SEASON_AMPLITUDE = 0.45;
-export const SEASON_PERIOD = 240;
+export { SEASON_PERIOD };
 
 export class World {
   readonly terrain: Terrain[];
@@ -42,12 +43,103 @@ export class World {
   private flooded = new Map<number, Terrain>();
   hazards: Hazard[] = [];
   private nextHazardId = 1;
+  /** Farmland: who planted each cell (agent id, 0 = wild), crop ripeness 0-1, and when it was last tended. */
+  readonly fieldOwner: Int32Array;
+  readonly crop: Float32Array;
+  readonly tended: Int32Array;
+  /** Whether a field's owner knows irrigation (cached per field for growth). */
+  readonly irrigated: Uint8Array;
+  /** Soil health 0-1: each harvest wears it down; it recovers only while lying fallow. */
+  readonly soil: Float32Array;
+  /** Natural resources: 0 none, 1 ore, 2 clay, 3 healing herbs. Which a people lives near shapes what it can invent. */
+  readonly resource: Uint8Array;
+  fieldCount = 0;
 
   constructor(readonly width: number, readonly height: number, fill: Terrain = "plains") {
     const n = width * height;
     this.terrain = new Array(n).fill(fill);
     this.food = new Float32Array(n);
     this.fertile = new Uint8Array(n);
+    this.fieldOwner = new Int32Array(n);
+    this.crop = new Float32Array(n);
+    this.tended = new Int32Array(n);
+    this.irrigated = new Uint8Array(n);
+    this.soil = new Float32Array(n).fill(1);
+    this.resource = new Uint8Array(n);
+  }
+
+  /** Scatter resources by terrain: ore in mountains, clay by water, herbs in forests (in patches, not everywhere). */
+  placeResources(seed: number) {
+    const rng = new Rng(seed * 7919 + 3);
+    const patches = (kind: number, where: (i: number) => boolean, count: number, radius: number) => {
+      const spots: number[] = [];
+      for (let i = 0; i < this.terrain.length; i++) if (where(i)) spots.push(i);
+      for (let n = 0; n < count && spots.length; n++) {
+        const c = spots[rng.int(0, spots.length)];
+        const cx = c % this.width;
+        const cy = Math.floor(c / this.width);
+        for (let dy = -radius; dy <= radius; dy++)
+          for (let dx = -radius; dx <= radius; dx++) {
+            if (!this.inBounds(cx + dx, cy + dy) || rng.chance(0.4)) continue;
+            const i = this.idx(cx + dx, cy + dy);
+            if (where(i)) this.resource[i] = kind;
+          }
+      }
+    };
+    const area = this.width * this.height;
+    patches(1, (i) => this.terrain[i] === "mountain", Math.max(1, Math.round(area / 900)), 2);
+    patches(2, (i) => this.terrain[i] !== "water" && this.fertile[i] === 1, Math.max(1, Math.round(area / 700)), 2);
+    patches(3, (i) => this.terrain[i] === "forest", Math.max(1, Math.round(area / 700)), 2);
+  }
+
+  /** Cells that can be planted: plains and forest edges, not deserts, mountains or water. */
+  plantable(i: number) {
+    const t = this.terrain[i];
+    return (t === "plains" || t === "forest") && !this.fieldOwner[i];
+  }
+
+  plant(i: number, owner: number, tick: number, irrigation: boolean) {
+    this.fieldOwner[i] = owner;
+    this.crop[i] = 0;
+    this.tended[i] = tick;
+    this.irrigated[i] = irrigation ? 1 : 0;
+    this.food[i] = 0;
+    this.fieldCount++;
+  }
+
+  abandon(i: number) {
+    if (!this.fieldOwner[i]) return;
+    this.fieldOwner[i] = 0;
+    this.crop[i] = 0;
+    this.fieldCount--;
+  }
+
+  /**
+   * Crops ripen over roughly 40 ticks in a good season, faster on fertile or irrigated land; drought
+   * stops them. Fields left untended for long go back to the wild.
+   */
+  growCrops(tick: number, seasons: boolean, droughtAt: (i: number) => boolean) {
+    const s = seasons ? this.season(tick) : 1;
+    for (let i = 0; i < this.fieldOwner.length; i++) {
+      if (!this.fieldOwner[i]) continue;
+      if (tick - this.tended[i] > 150) {
+        this.abandon(i);
+        continue;
+      }
+      if (droughtAt(i) || this.terrain[i] === "water") continue;
+      const boost = (this.fertile[i] ? 1.4 : 1) * (this.irrigated[i] ? (this.fertile[i] ? 1.6 : 1.3) : 1);
+      this.crop[i] = Math.min(1, this.crop[i] + 0.025 * s * boost * (0.25 + 0.75 * this.soil[i]));
+    }
+  }
+
+  /** Fallow land slowly recovers its soil. Called every 10 ticks. */
+  restSoil() {
+    for (let i = 0; i < this.soil.length; i++) if (!this.fieldOwner[i] && this.soil[i] < 1) this.soil[i] = Math.min(1, this.soil[i] + 0.012);
+  }
+
+  /** A harvest takes from the soil; irrigated fields are worn less. */
+  exhaust(i: number) {
+    this.soil[i] = Math.max(0.1, this.soil[i] - (this.irrigated[i] ? 0.035 : 0.06));
   }
 
   idx(x: number, y: number) {
@@ -65,6 +157,7 @@ export class World {
 
   paint(rect: Rect, t: Terrain) {
     this.forRect(rect, (i) => {
+      if (t !== "plains" && t !== "forest") this.abandon(i);
       this.terrain[i] = t;
       this.food[i] = Math.min(this.food[i], TERRAIN[t].maxFood);
     });
@@ -104,13 +197,20 @@ export class World {
     return phase < 0.25 ? "spring" : phase < 0.5 ? "summer" : phase < 0.75 ? "autumn" : "winter";
   }
 
-  regrow(tick: number, globalRate: number, seasons = true) {
-    const s = (seasons ? this.season(tick) : 1) * globalRate;
+  /** Cells under drought this tick. */
+  droughtMask(): Uint8Array {
     const drought = new Uint8Array(this.food.length);
     for (const h of this.hazards) if (h.kind === "drought") this.forRect(h.rect, (i) => (drought[i] = 1));
+    return drought;
+  }
+
+  regrow(tick: number, globalRate: number, seasons = true) {
+    const s = (seasons ? this.season(tick) : 1) * globalRate;
+    const drought = this.droughtMask();
     for (let i = 0; i < this.food.length; i++) {
       const info = TERRAIN[this.terrain[i]];
-      if (!info.maxFood || drought[i]) continue;
+      // Farmland grows crops, not wild food.
+      if (!info.maxFood || drought[i] || this.fieldOwner[i]) continue;
       const r = info.regrow * s * (this.fertile[i] ? 1.6 : 1);
       this.food[i] = Math.min(info.maxFood, this.food[i] + info.maxFood * r);
     }
@@ -120,6 +220,7 @@ export class World {
     const h: Hazard = { id: this.nextHazardId++, kind, rect, message, ttl: ttl ?? DEFAULT_TTL[kind] };
     if (kind === "flood")
       this.forRect(rect, (i) => {
+        this.abandon(i);
         if (!this.flooded.has(i)) this.flooded.set(i, this.terrain[i]);
         this.terrain[i] = "water";
         this.food[i] = 0;
@@ -139,7 +240,10 @@ export class World {
     for (const h of this.hazards) {
       h.ttl--;
       if (h.kind === "fire") {
-        this.forRect(h.rect, (i) => (this.food[i] = 0));
+        this.forRect(h.rect, (i) => {
+          this.food[i] = 0;
+          this.crop[i] = 0;
+        });
         if (rng.chance(0.08)) {
           // Spread into adjacent forest.
           const dx = rng.pick([-1, 1]) * rng.int(1, 3);

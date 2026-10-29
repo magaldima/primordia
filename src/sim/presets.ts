@@ -128,6 +128,8 @@ export interface Founder {
   color: string;
   creed: string;
   traits: Traits;
+  /** Model this founder's lineage thinks with; "" = the default model. */
+  model: string;
 }
 
 export type Placement = "center" | "corners" | "line" | "random";
@@ -143,10 +145,10 @@ export interface PetriOptions {
 }
 
 export const PETRI_FOUNDERS: Founder[] = [
-  { name: "Alpha", color: "#3987e5", creed: "Survive. Eat when hungry, have children when you can.", traits: t(0.5, 0.5, 0.5, 0.5, 0.5, 0.5) },
-  { name: "Beta", color: "#d95926", creed: "Survive. Eat when hungry, have children when you can.", traits: t(0.5, 0.5, 0.5, 0.5, 0.5, 0.5) },
-  { name: "Gamma", color: "#199e70", creed: "Survive. Eat when hungry, have children when you can.", traits: t(0.5, 0.5, 0.5, 0.5, 0.5, 0.5) },
-  { name: "Delta", color: "#c98500", creed: "Survive. Eat when hungry, have children when you can.", traits: t(0.5, 0.5, 0.5, 0.5, 0.5, 0.5) },
+  { name: "Alpha", color: "#3987e5", creed: "Survive. Eat when hungry, have children when you can.", traits: t(0.5, 0.5, 0.5, 0.5, 0.5, 0.5), model: "" },
+  { name: "Beta", color: "#d95926", creed: "Survive. Eat when hungry, have children when you can.", traits: t(0.5, 0.5, 0.5, 0.5, 0.5, 0.5), model: "" },
+  { name: "Gamma", color: "#199e70", creed: "Survive. Eat when hungry, have children when you can.", traits: t(0.5, 0.5, 0.5, 0.5, 0.5, 0.5), model: "" },
+  { name: "Delta", color: "#c98500", creed: "Survive. Eat when hungry, have children when you can.", traits: t(0.5, 0.5, 0.5, 0.5, 0.5, 0.5), model: "" },
 ];
 
 export const PETRI_DEFAULTS: PetriOptions = {
@@ -206,6 +208,7 @@ export function petriDish(o: PetriOptions): ScenarioSpec {
       traits: f.traits,
       spawn: { x: spots[i].x, y: spots[i].y, w: 1, h: 1 },
       arriveAt: 0,
+      ...(f.model ? { model: f.model } : {}),
     })),
     events: [],
     locked: true,

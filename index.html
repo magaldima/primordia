@@ -8,13 +8,16 @@
   </head>
   <body>
     <header class="topbar">
+      <button class="ghost panel-toggle" id="toggleLeft" title="Show/hide controls  [" aria-label="Toggle controls panel">⟨</button>
       <div class="brand">Primordia</div>
       <div class="scenario-title" id="scenarioTitle"></div>
       <div class="chips" id="chips"></div>
+      <button id="exportBtn" title="Download this run (stats, events, reports, peoples, faiths, the living and the dead) as JSON for analysis">Export run</button>
       <button class="primary" id="newGameBtn">New world</button>
+      <button class="ghost panel-toggle" id="toggleRight" title="Show/hide panels  ]" aria-label="Toggle side panels">⟩</button>
     </header>
 
-    <div class="layout">
+    <div class="layout" id="layout">
       <aside class="panel left">
         <section>
           <h3>Time</h3>
@@ -75,6 +78,12 @@
           <label>Color by
             <select id="colorMode">
               <option value="tribe">Tribe</option>
+              <option value="stage">Stage of life</option>
+              <option value="group">Organization</option>
+              <option value="religion">Faith</option>
+              <option value="knowledge">Knowledge</option>
+              <option value="reputation">Standing</option>
+              <option value="craft">Craft</option>
               <option value="aggression">Aggression</option>
               <option value="cooperation">Cooperation</option>
               <option value="curiosity">Curiosity</option>
@@ -85,7 +94,9 @@
               <option value="age">Age</option>
             </select>
           </label>
+          <label title="Ore (grey), clay (ochre) and healing herbs (green) on the land"><input type="checkbox" id="resources" /> Resources</label>
           <label><input type="checkbox" id="trails" /> Trails</label>
+          <label title="Lines from each follower to whom they follow; leaders are ringed in gold"><input type="checkbox" id="ties" /> Ties</label>
           <div class="banner" id="banner" hidden></div>
         </div>
         <div class="board-wrap"><canvas id="board"></canvas></div>
@@ -93,25 +104,51 @@
 
       <aside class="panel right">
         <nav class="tabs" id="tabs">
-          <button data-tab="inspect" class="active">Inspector</button>
-          <button data-tab="chronicle">Chronicle</button>
+          <button data-tab="inspect" class="active">Agent</button>
+          <button data-tab="society">Society</button>
+          <button data-tab="annals">Annals</button>
+          <button data-tab="chronicle">Log</button>
           <button data-tab="charts">Charts</button>
         </nav>
         <div class="tab" id="tab-inspect"></div>
+        <div class="tab" id="tab-society" hidden></div>
+        <div class="tab" id="tab-annals" hidden>
+          <div class="annals-bar">
+            <button id="annalNow" class="primary">Write a report now</button>
+            <span class="hint" id="annalStatus"></span>
+          </div>
+          <div id="annals"></div>
+        </div>
         <div class="tab" id="tab-chronicle" hidden>
           <div class="filters" id="logFilters"></div>
           <ol class="log" id="log"></ol>
         </div>
         <div class="tab" id="tab-charts" hidden>
-          <h4>Population</h4>
+          <h4>Population by stage of life</h4>
           <div class="chart"><canvas id="chartPop"></canvas></div>
-          <h4>Average temperament</h4>
+          <h4>Knowledge (levels of understanding)</h4>
+          <div class="chart"><canvas id="chartKnow"></canvas></div>
+          <h4>Does each generation know more? <span class="hint">(latest generations are still learning)</span></h4>
+          <div class="chart"><canvas id="chartGen"></canvas></div>
+          <h4>Science &amp; civilization</h4>
+          <div class="chart"><canvas id="chartCiv"></canvas></div>
+          <h4>Lifespan</h4>
+          <div class="chart"><canvas id="chartLife"></canvas></div>
+          <h4>Organization</h4>
+          <div class="chart"><canvas id="chartOrg"></canvas></div>
+          <h4>Trust</h4>
+          <div class="chart"><canvas id="chartTrust"></canvas></div>
+          <h4>Diversity: peoples, faiths, tongues, norms</h4>
+          <div class="chart"><canvas id="chartDiv"></canvas></div>
+          <h4>Inborn temperament (what evolution selects)</h4>
           <div class="chart"><canvas id="chartTraits"></canvas></div>
           <h4>Tribes</h4>
           <div class="chart"><canvas id="chartTribes"></canvas></div>
         </div>
       </aside>
     </div>
+
+    <footer class="statusbar" id="statusbar"></footer>
 
     <dialog id="newGame">
       <form method="dialog" class="modal">

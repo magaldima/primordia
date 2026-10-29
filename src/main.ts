@@ -1,11 +1,16 @@
+import { TECHS } from "../shared/tech";
+import { truthAt, TRUTHS } from "../shared/truths";
 import {
   DEFAULT_PARAMS,
+  DOMAINS,
   EFFORTS,
   MODELS,
+  STAGES,
   TERRAINS,
   TRAIT_KEYS,
-  type Effort,
   type HazardKind,
+  type Stage,
+  type StageMind,
   type ScenarioResponse,
   type ScenarioSpec,
   type SimParams,
@@ -13,8 +18,12 @@ import {
 } from "../shared/types";
 import { escapeHtml, TimeChart } from "./charts";
 import { Mind, post } from "./mind";
-import { Renderer, tribeColor, type ColorMode } from "./render";
-import { Engine, hexToHue, type Agent, type LogEntry } from "./sim/engine";
+import { CRAFT_COLORS, groupHue, Renderer, STAGE_COLORS, tribeColor, type ColorMode } from "./render";
+import type { AnnalEntry } from "./sim/digest";
+import { exportRun } from "./sim/export";
+import { DEED_TEXT, judge, type Deed } from "./sim/religion";
+import { Engine, hexToHue, repWord, type Agent, type LogEntry } from "./sim/engine";
+import { levelOf, progressOf, totalLevels } from "./sim/knowledge";
 import { describeTraits } from "./sim/genome";
 import { PETRI_DEFAULTS, PETRI_FOUNDERS, petriDish, PRESETS, type PetriOptions, type Placement } from "./sim/presets";
 import { sanitizeScenario } from "./sim/scenario";
@@ -26,8 +35,8 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getEleme
 
 /** Mind settings survive "New world"; the laws of nature reset to defaults plus the scenario's overrides. */
 const MIND_KEYS = [
-  "brain", "model", "effort", "mindShare", "thinkInterval", "thinkBatchSize",
-  "maxConcurrentRequests", "waitForMinds", "llmBreeding", "budgetUsd",
+  "brain", "model", "stageMinds", "mindShare", "thinkInterval", "thinkBatchSize",
+  "maxConcurrentRequests", "waitForMinds", "llmBreeding", "budgetUsd", "historianEvery", "historianModel",
 ] as const;
 const MIND_SAVE_KEY = "primordia.mind";
 let carried: Partial<SimParams> = { brain: "instinct", ...loadMindSettings() };
@@ -37,6 +46,8 @@ function loadMindSettings(): Partial<SimParams> {
   try {
     const saved = JSON.parse(localStorage.getItem(MIND_SAVE_KEY) ?? "{}");
     if (saved.model && !MODELS.some((m) => m.id === saved.model)) delete saved.model;
+    if (saved.historianModel && !MODELS.some((m) => m.id === saved.historianModel)) delete saved.historianModel;
+    if (saved.stageMinds) saved.stageMinds = { ...structuredClone(DEFAULT_PARAMS.stageMinds), ...saved.stageMinds };
     return Object.fromEntries(MIND_KEYS.filter((k) => k in saved).map((k) => [k, saved[k]]));
   } catch {
     return {};
@@ -59,6 +70,8 @@ let selectedId: number | null = null;
 let hover: { x: number; y: number } | null = null;
 let hasKey = false;
 let showTrails = false;
+let showTies = false;
+let showResources = false;
 
 type Tool = "inspect" | "terrain" | HazardKind | "smite" | "settle";
 let tool: Tool = "inspect";
@@ -100,6 +113,8 @@ function frame(now: number) {
     hover: hover && tool !== "inspect" ? { ...hover, size: tool === "smite" ? 1 : brush } : null,
     selectedId,
     trails: showTrails,
+    ties: showTies,
+    resources: showResources,
   });
   updateHud(now);
   requestAnimationFrame(frame);
@@ -132,7 +147,7 @@ let lastStart: { scenario: ScenarioSpec | null; extra: Partial<SimParams>; petri
 function startGame(scenario: ScenarioSpec | null, extra: Partial<SimParams> = {}, petri: PetriOptions | null = null) {
   lastStart = { scenario, extra, petri };
   mind.reset();
-  for (const k of MIND_KEYS) (carried as Record<string, unknown>)[k] = engine.params[k];
+  for (const k of MIND_KEYS) (carried as Record<string, unknown>)[k] = structuredClone(engine.params[k]);
   engine = new Engine({ ...carried, ...extra }, scenario);
   selectedId = null;
   renderer.resize(engine);
@@ -208,6 +223,76 @@ function replay(newSeed: boolean) {
   } else startGame(scenario, seed ? { ...extra, seed } : extra);
 }
 
+// --- Export
+
+$("exportBtn").onclick = () => {
+  const data = JSON.stringify(exportRun(engine));
+  const blob = new Blob([data], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const slug = (engine.scenario?.title ?? "random-world").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  a.href = url;
+  a.download = `primordia-${slug}-t${engine.tick}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
+// --- Collapsible sidebars
+
+const layout = $("layout");
+function setPanels(left: boolean, right: boolean) {
+  layout.classList.toggle("no-left", !left);
+  layout.classList.toggle("no-right", !right);
+  $("toggleLeft").textContent = left ? "⟨" : "⟩";
+  $("toggleRight").textContent = right ? "⟩" : "⟨";
+  try {
+    localStorage.setItem("primordia.panels", JSON.stringify({ left, right }));
+  } catch {
+    /* storage unavailable */
+  }
+  // Re-fit the board once the grid has reflowed (and again after the transition).
+  requestAnimationFrame(() => renderer.resize(engine));
+  setTimeout(() => renderer.resize(engine), 200);
+}
+const panelsOpen = () => ({ left: !layout.classList.contains("no-left"), right: !layout.classList.contains("no-right") });
+$("toggleLeft").onclick = () => setPanels(!panelsOpen().left, panelsOpen().right);
+$("toggleRight").onclick = () => setPanels(panelsOpen().left, !panelsOpen().right);
+document.addEventListener("keydown", (e) => {
+  if ((e.target as HTMLElement).closest("input, textarea, select")) return;
+  if (e.key === "[") $("toggleLeft").click();
+  if (e.key === "]") $("toggleRight").click();
+});
+try {
+  const saved = JSON.parse(localStorage.getItem("primordia.panels") ?? "{}");
+  if (saved.left === false || saved.right === false) setPanels(saved.left !== false, saved.right !== false);
+} catch {
+  /* storage unavailable */
+}
+
+// --- Status bar: costs and minds at a glance
+
+function renderStatusBar() {
+  const p = engine.params;
+  const label = (id: string) => MODELS.find((m) => m.id === id)?.label.replace("Claude ", "") ?? id;
+  const money = (v: number) => (v < 0.01 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`);
+  const share = p.budgetUsd > 0 ? Math.min(1, mind.spentUsd / p.budgetUsd) : 1;
+  const est = mind.estimate(engine);
+  const report = mind.reportCost(p.historianModel);
+  const lastAnnal = engine.annals.at(-1)?.tick ?? 0;
+  const tribeOverrides = new Set(engine.tribeModels.values()).size;
+  const items = [
+    `<span class="item">Minds <b>${p.brain === "hybrid" ? `${label(p.model)}${tribeOverrides ? ` +${tribeOverrides} tribe model${tribeOverrides > 1 ? "s" : ""}` : ""}` : "off (instinct)"}</b></span>`,
+    `<span class="item">Spent <b>${money(mind.spentUsd)}</b><span class="meter ${share >= 1 ? "over" : ""}"><i style="width:${share * 100}%"></i></span>of ${money(p.budgetUsd)}</span>`,
+    p.brain === "hybrid" ? `<span class="item">≈ <b>${money(est.usdPer100)}</b> / 100 ticks${est.measured ? "" : " (est.)"}</span>` : "",
+    `<span class="item"><b>${mind.requests}</b> requests · <b>${mind.inflight}</b> in flight</span>`,
+    `<span class="item">Tokens <b>${(mind.tokens.input / 1000).toFixed(1)}k</b> in · <b>${(mind.tokens.output / 1000).toFixed(1)}k</b> out</span>`,
+    `<span class="spacer"></span>`,
+    `<span class="item">Historian <b>${label(p.historianModel)}</b> · ${mind.offline ? "offline" : `${money(report.usd)}/report${p.historianEvery ? ` · next ~t${lastAnnal + p.historianEvery}` : " · on demand"}`}${mind.historianBusy ? " · <i>writing…</i>" : ""}</span>`,
+    mind.lastError ? `<span class="item err" title="${escapeHtml(mind.lastError)}">⚠ ${escapeHtml(mind.lastError.slice(0, 60))}</span>` : "",
+  ];
+  $("statusbar").innerHTML = items.filter(Boolean).join("");
+}
+
 // --- HUD
 
 let lastHud = 0;
@@ -221,12 +306,22 @@ function updateHud(now: number) {
     ["Alive", s.population],
     ["Generations", s.maxGeneration],
     ["Tribes", Object.keys(s.tribes).length],
+    ["Inventions", s.techs ?? 0],
+    ["Peoples", s.tribeCount ?? 0],
+    ["Faiths", s.religions ?? 0],
+    ["Languages", s.languages ?? 0],
+    ["Wars", s.wars ?? 0],
+    ["Emigrated", engine.emigrated],
+    ["In crisis", s.crises ?? 0],
   ];
   $("chips").innerHTML = chips.map(([k, v]) => `<span class="chip">${k ? `${k} ` : ""}<b>${v}</b></span>`).join("");
   renderMindStatus();
+  renderStatusBar();
   renderInspector(false);
   renderLog(false);
   renderCharts();
+  renderSociety();
+  renderAnnals();
 }
 
 function showBanner(msg: string | null) {
@@ -388,13 +483,18 @@ const RULES: Knob[] = [
   { key: "foodRegrowth", label: "Food regrowth", min: 0.1, max: 3, step: 0.05, fmt: (v) => `${v.toFixed(2)}×` },
   { key: "metabolism", label: "Metabolism", min: 0.2, max: 2.5, step: 0.05, fmt: (v) => v.toFixed(2) },
   { key: "mutationRate", label: "Mutation rate", min: 0, max: 0.4, step: 0.01, fmt: (v) => v.toFixed(2) },
+  { key: "longevity", label: "Medicine's power over death", min: 0, max: 1.5, step: 0.05, fmt: (v) => `up to +${Math.round(v * 100)}% life` },
+  { key: "plasticity", label: "Experience shapes temperament", min: 0, max: 3, step: 0.1, fmt: (v) => `${v.toFixed(1)}×` },
   { key: "reproductionCost", label: "Cost of a child", min: 5, max: 60, step: 1 },
-  { key: "maturityAge", label: "Age of maturity", min: 5, max: 120, step: 1 },
   { key: "reproductionCooldown", label: "Birth cooldown", min: 1, max: 120, step: 1 },
+  { key: "childhoodEnd", label: "Childhood ends", min: 0.03, max: 0.4, step: 0.01, fmt: (v) => `${Math.round(v * 100)}% of life` },
+  { key: "adolescenceEnd", label: "Adulthood begins", min: 0.05, max: 0.6, step: 0.01, fmt: (v) => `${Math.round(v * 100)}% of life` },
+  { key: "elderhoodStart", label: "Elderhood begins", min: 0.4, max: 0.98, step: 0.01, fmt: (v) => `${Math.round(v * 100)}% of life` },
   { key: "lifespanMin", label: "Lifespan min", min: 30, max: 600, step: 10 },
   { key: "lifespanMax", label: "Lifespan max", min: 40, max: 800, step: 10 },
   { key: "attackDamage", label: "Attack damage", min: 0, max: 100, step: 1 },
-  { key: "maxAgents", label: "Population cap", min: 20, max: 1000, step: 10 },
+  { key: "strife", label: "Strife (struggles for power)", min: 0, max: 2, step: 0.1, fmt: (v) => (v === 0 ? "orderly" : `${v.toFixed(1)}×`) },
+  { key: "maxAgents", label: "Safety limit (performance only)", min: 200, max: 5000, step: 100 },
 ];
 
 function knobHtml(k: Knob, value: number) {
@@ -418,10 +518,12 @@ function buildRuleControls() {
   $("ruleControls").innerHTML =
     RULES.map((k) => knobHtml(k, engine.params[k.key] as number)).join("") +
     `<label class="check"><input type="checkbox" id="seasonsChk" ${engine.params.seasons ? "checked" : ""}/> Seasons</label>` +
+    `<label class="check"><input type="checkbox" id="economyChk" ${engine.params.economy ? "checked" : ""}/> Economy (crafts and trade)</label>` +
     `<button id="resetRules" class="wide" style="margin-top:10px">Reset to scenario defaults</button>`;
   $<HTMLInputElement>("seasonsChk").onchange = (e) => (engine.params.seasons = (e.target as HTMLInputElement).checked);
+  $<HTMLInputElement>("economyChk").onchange = (e) => (engine.params.economy = (e.target as HTMLInputElement).checked);
   $("resetRules").onclick = () => {
-    for (const k of [...RULES.map((r) => r.key), "seasons" as const])
+    for (const k of [...RULES.map((r) => r.key), "seasons" as const, "economy" as const])
       (engine.params as unknown as Record<string, unknown>)[k] = engine.scenario?.params[k] ?? DEFAULT_PARAMS[k];
     buildRuleControls();
   };
@@ -433,9 +535,10 @@ bindKnobs($("ruleControls"), RULES, () => engine.params);
 
 const MIND_KNOBS: Knob[] = [
   { key: "mindShare", label: "Agents with minds", min: 0, max: 1, step: 0.05, fmt: (v) => `${Math.round(v * 100)}%` },
-  { key: "thinkInterval", label: "Think every", min: 5, max: 200, step: 5, fmt: (v) => `${v} ticks` },
+  { key: "thinkInterval", label: "Base think interval", min: 5, max: 200, step: 5, fmt: (v) => `${v} ticks` },
   { key: "thinkBatchSize", label: "Agents per request", min: 1, max: 20, step: 1 },
   { key: "maxConcurrentRequests", label: "Parallel requests", min: 1, max: 16, step: 1 },
+  { key: "historianEvery", label: "Historian reports", min: 0, max: 1000, step: 50, fmt: (v) => (v ? `every ${v} ticks` : "on demand only") },
 ];
 
 function syncMindControls() {
@@ -448,12 +551,25 @@ function syncMindControls() {
       </select></label>
     <label class="field">Model
       <select id="modelSel">${MODELS.map((m) => `<option value="${m.id}" ${m.id === p.model ? "selected" : ""}>${m.label} ($${m.inPerM} / $${m.outPerM} per M tokens)</option>`).join("")}</select></label>
-    <label class="field">Thinking depth
-      <select id="effortSel">${EFFORTS.map((x) => `<option value="${x}" ${x === p.effort ? "selected" : ""}>${x}</option>`).join("")}</select></label>
-    ${MIND_KNOBS.map((k) => knobHtml(k, p[k.key] as number)).join("")}
+    <h4>Thinking by stage of life</h4>
+    <div class="stage-minds">${STAGES.map((st) => stageMindRow(st, p.stageMinds[st])).join("")}</div>
+    <p class="hint">Depth is Claude's effort per thought; "every" scales the base interval (lower = more often).</p>
+    ${MIND_KNOBS.filter((k) => k.key !== "historianEvery").map((k) => knobHtml(k, p[k.key] as number)).join("")}
     <label class="check"><input type="checkbox" id="lockstep" ${p.waitForMinds ? "checked" : ""}/> Lockstep (time waits for minds)</label>
     <label class="check"><input type="checkbox" id="llmBreed" ${p.llmBreeding ? "checked" : ""}/> Claude writes children's creeds</label>
-    <label class="field">Budget (USD) <input type="number" id="budget" min="0" step="0.5" value="${p.budgetUsd}" /></label>`;
+    <label class="field">Budget (USD) <input type="number" id="budget" min="0" step="0.5" value="${p.budgetUsd}" /></label>
+    <h4>Historian</h4>
+    <p class="hint">Writes the Annals. Separate from the agents' minds, and runs even when they use instinct only.</p>
+    <label class="field">Model
+      <select id="historianModelSel">${MODELS.map((m) => `<option value="${m.id}" ${m.id === p.historianModel ? "selected" : ""}>${m.label}</option>`).join("")}</select></label>
+    ${knobHtml(MIND_KNOBS.find((k) => k.key === "historianEvery")!, p.historianEvery)}
+    <div class="hint" id="historianCost"></div>`;
+}
+const EVERY = [0.5, 0.75, 1, 1.5, 2, 3];
+function stageMindRow(st: Stage, m: StageMind) {
+  return `<span class="swatch" style="background:${STAGE_COLORS[st]}"></span><span>${st}</span>
+    <select data-stage-effort="${st}">${["off", ...EFFORTS].map((x) => `<option ${x === m.effort ? "selected" : ""}>${x}</option>`).join("")}</select>
+    <select data-stage-every="${st}" ${m.effort === "off" ? "disabled" : ""}>${EVERY.map((x) => `<option value="${x}" ${x === m.every ? "selected" : ""}>every ${x}×</option>`).join("")}</select>`;
 }
 const mindBox = $("mindControls");
 bindKnobs(mindBox, MIND_KNOBS, () => engine.params);
@@ -467,7 +583,12 @@ mindBox.addEventListener("change", (e) => {
     else showBanner(null);
   }
   if (el.id === "modelSel") p.model = el.value;
-  if (el.id === "effortSel") p.effort = el.value as Effort;
+  if (el.id === "historianModelSel") p.historianModel = el.value;
+  if (el.dataset.stageEffort) {
+    p.stageMinds[el.dataset.stageEffort as Stage].effort = el.value as StageMind["effort"];
+    syncMindControls();
+  }
+  if (el.dataset.stageEvery) p.stageMinds[el.dataset.stageEvery as Stage].every = Number(el.value);
   if (el.id === "lockstep") p.waitForMinds = el.checked;
   if (el.id === "llmBreed") p.llmBreeding = el.checked;
   if (el.id === "budget") p.budgetUsd = Number(el.value);
@@ -476,15 +597,18 @@ mindBox.addEventListener("change", (e) => {
 
 function renderMindStatus() {
   const p = engine.params;
+  const rc = mind.reportCost(p.historianModel);
+  const per = (u: number) => (u < 0.01 ? u.toFixed(4) : u.toFixed(3));
+  $("historianCost").innerHTML = mind.offline
+    ? "No API key: reports will show the numbers' warning signs only."
+    : `≈ $${per(rc.usd)} per report${rc.measured ? " (measured)" : " (estimate)"}${p.historianEvery ? `, ≈ $${per((rc.usd * 1000) / p.historianEvery)} per 1,000 ticks` : ""}`;
   const thinking = [...engine.agents.values()].filter((a) => a.thinking).length;
   const over = !mind.canSpend(engine);
   const est = mind.estimate(engine);
   const minds = engine.mindCount();
-  const perAgent = minds ? Math.round(engine.params.thinkInterval) : 0;
   $("mindStatus").innerHTML =
     p.brain === "hybrid"
-      ? `<b>${minds}</b> of ${engine.agents.size} agents have minds${minds ? `, each consulting Claude every ~${perAgent} ticks` : ""}.
-         The rest of the time, and for everyone else, instinct decides.<br/>
+      ? `<b>${minds}</b> of ${engine.agents.size} agents are thinking with Claude right now (children and anyone without a mind run on instinct).<br/>
          ≈ <b>$${est.usdPer100 < 0.01 ? est.usdPer100.toFixed(4) : est.usdPer100.toFixed(2)}</b> per 100 ticks
          (${Math.round(est.decisionsPer100)} decisions${est.measured ? ", measured" : ", rough estimate"})<br/>
          Spent <b>$${mind.spentUsd.toFixed(3)}</b> of $${p.budgetUsd.toFixed(2)} · ${mind.requests} requests<br/>
@@ -509,13 +633,18 @@ function renderInspector(force: boolean) {
   if (force || inspectedId !== a.id) {
     inspectedId = a.id;
     box.innerHTML = `<div class="inspector">
-      <div class="name"><span class="swatch" style="background:hsl(${a.genome.hue},72%,60%)"></span><span id="insName"></span></div>
+      <div class="name"><span class="swatch" style="background:hsl(${a.genome.hue},72%,60%)"></span><span id="insName"></span><span class="badge" id="insStage"></span></div>
       <div class="sub" id="insSub"></div>
       <div id="insLive"></div>
       <h4>Creed${creedEditable() ? ` <span class="hint">(edit to rewrite its beliefs)</span>` : ""}</h4>
       <textarea id="insCreed" rows="4" ${creedEditable() ? "" : "readonly"}></textarea>
-      <h4>Temperament</h4>
+      <h4>Temperament <span class="hint">bar = expressed now · tick = inborn</span></h4>
       <dl id="insTraits"></dl>
+      <h4>Among others</h4>
+      <dl id="insSocial"></dl>
+      <h4>Knowledge</h4>
+      <dl id="insKnow"></dl>
+      <div id="insBeliefs"></div>
       <h4>Recent memory</h4>
       <ul class="memory" id="insMemory"></ul>
       <div class="row" ${isLocked() ? "hidden" : ""}>
@@ -543,34 +672,107 @@ function renderInspector(force: boolean) {
       }
     };
   }
+  const link = (id: number | null) => {
+    const x = id !== null ? engine.findAgent(id) : undefined;
+    return x ? `<span class="link" data-agent="${x.id}">${escapeHtml(x.name)}</span>${x.alive ? "" : " †"}` : "";
+  };
   $("insName").textContent = a.name;
-  const parents = a.parents?.map((id) => engine.findAgent(id)).filter((p): p is Agent => !!p) ?? [];
+  $("insStage").textContent = a.stage;
+  $("insStage").style.background = STAGE_COLORS[a.stage];
   $("insSub").innerHTML =
-    `${escapeHtml(a.tribe)} · generation ${a.generation}` +
-    (parents.length ? ` · child of ${parents.map((p) => `<span class="link" data-agent="${p.id}">${escapeHtml(p.name)}</span>`).join(" & ")}` : "");
+    `${escapeHtml(a.tribe)} · generation ${a.generation}` + (a.parents ? ` · child of ${a.parents.map(link).join(" & ")}` : "");
+  const p = engine.params;
+  const kids = a.childIds.map(link).filter(Boolean);
+  const inv = (["rations", "tools", "medicine"] as const).filter((g) => a.inventory[g]).map((g) => `${a.inventory[g]} ${g}`).join(", ") || "nothing";
+  const mindLabel = engine.thinks(a)
+    ? `${MODELS.find((m) => m.id === engine.modelFor(a))?.label ?? engine.modelFor(a)}, ${engine.effortFor(a)} effort${p.brain === "hybrid" ? "" : " (instinct mode is on)"}`
+    : engine.hasMind(a) ? `instinct for now (${a.stage}s don't think with Claude)` : "instinct only";
   const live = a.alive
     ? `<dl>
-        <dt>Energy</dt><dd>${Math.round(a.energy)} / ${engine.params.maxEnergy}<div class="bar"><i style="width:${(a.energy / engine.params.maxEnergy) * 100}%"></i></div></dd>
-        <dt>Age</dt><dd>${a.age} / ${a.lifespan}<div class="bar"><i style="width:${(a.age / a.lifespan) * 100}%"></i></div></dd>
-        <dt>Doing</dt><dd>${a.intent.replace("_", " ")}${a.intentDir !== "none" && a.intent === "migrate" ? ` ${a.intentDir}` : ""}${a.intentTarget ? ` → ${escapeHtml(engine.findAgent(a.intentTarget)?.name ?? "?")}` : ""}${a.thinking ? " · <i>thinking…</i>" : ""}</dd>
-        <dt>Mind</dt><dd>${engine.hasMind(a) ? (engine.params.brain === "hybrid" ? "Claude + instinct" : "Claude (off: instinct mode)") : "instinct only"}</dd>
-        <dt>Children</dt><dd>${a.children}${a.kills ? ` · ${a.kills} kills` : ""}${a.sick ? ` · <span style="color:#b6f05a">sick</span>` : ""}</dd>
+        <dt>Energy</dt><dd>${Math.round(a.energy)} / ${p.maxEnergy}<div class="bar"><i style="width:${(a.energy / p.maxEnergy) * 100}%"></i></div></dd>
+        <dt>Age</dt><dd>${a.age} of a likely ${a.lifespan} <span class="hint">(born with ${a.baseLifespan}${a.lifespan > a.baseLifespan ? `, +${a.lifespan - a.baseLifespan} from medicine` : ""}${a.wear >= 1 ? `, −${Math.round(a.wear)} from wear` : ""})</span><div class="bar stages">${stageBar(a)}</div></dd>
+        <dt>Health</dt><dd>${a.frailty > 0.65 ? "<b>frail</b>" : a.frailty > 0.35 ? "ageing" : "hale"} <span class="hint">frailty ${a.frailty.toFixed(2)}</span><div class="bar"><i style="width:${a.frailty * 100}%;background:var(--danger)"></i></div></dd>
+        <dt>Doing</dt><dd>${a.intent.replace("_", " ")}${a.intentDir !== "none" && a.intent === "migrate" ? ` ${a.intentDir}` : ""}${a.intentTarget ? ` → ${link(a.intentTarget)}` : ""}${a.thinking ? " · <i>thinking…</i>" : ""}</dd>
+        <dt>Mind</dt><dd>${mindLabel}</dd>
+        <dt>Family</dt><dd>${a.partner !== null ? `partner ${link(a.partner)}` : "no partner"}${kids.length ? `<br/>children: ${kids.join(", ")}` : ""}</dd>
+        <dt>Craft</dt><dd>${a.craft ? `<span class="swatch" style="background:${CRAFT_COLORS[a.craft]}"></span> ${a.craft}, skill ${a.skills[a.craft].toFixed(2)}` : "none yet"}</dd>
+        <dt>Has</dt><dd>${inv}${a.fields.length ? ` · ${a.fields.length} field${a.fields.length === 1 ? "" : "s"} (${a.fields.filter((i) => engine.world.crop[i] >= 1).length} ripe)` : ""}</dd>
+        <dt>Inventions</dt><dd>${[...a.techs].map((t) => `<span class="chip-sm" title="${escapeHtml(TECHS[t].effect)}">${TECHS[t].name}</span>`).join("") || "none"}${a.techs.has("writing") ? ` <span class="hint">· literate</span>` : ""}</dd>
+        <dt>Research</dt><dd>${a.research.target ? `${TECHS[a.research.target].name} <div class="bar"><i style="width:${Math.min(100, (a.research.progress / TECHS[a.research.target].cost) * 100)}%"></i></div>` : "—"}<span class="hint">${engine.canResearch(a) ? "has the ease to study" : "no ease to study"}</span></dd>
+        <dt>Standing</dt><dd>${repWord(a.reputation)} (${a.reputation.toFixed(2)})${a.grudges.length ? ` · cheated by ${a.grudges.slice(-3).map(link).join(", ")}` : ""}${a.tradeStance ? ` · trades ${a.tradeStance === "reciprocal" ? "tit-for-tat" : a.tradeStance === "cheat" ? "dishonestly" : "honestly"}` : ""}</dd>
+        <dt>Other</dt><dd>${a.kills ? `${a.kills} kills · ` : ""}${a.sick ? `<span style="color:#b6f05a">sick</span> · ` : ""}${a.children} children</dd>
       </dl>`
-    : `<p class="thought" style="border-color:var(--danger)">Died at tick ${a.diedAt}, age ${a.age}: ${escapeHtml(a.causeOfDeath ?? "")}. Left ${a.children} children.</p>`;
+    : `<p class="thought" style="border-color:var(--danger)">Died at tick ${a.diedAt}, an ${a.stage} aged ${a.age}: ${escapeHtml(a.causeOfDeath ?? "")}. Left ${a.children} children.</p>`;
   const thought = a.thought ? `<div class="thought">“${escapeHtml(a.thought)}” <span class="hint">t${a.thoughtTick}</span></div>` : "";
   $("insLive").innerHTML = live + thought;
   const creed = $<HTMLTextAreaElement>("insCreed");
   if (document.activeElement !== creed && creed.value !== a.genome.creed) creed.value = a.genome.creed;
   $("insTraits").innerHTML =
-    TRAIT_KEYS.map((k) => `<dt>${k}</dt><dd>${a.genome.traits[k].toFixed(2)}<div class="bar"><i style="width:${a.genome.traits[k] * 100}%"></i></div></dd>`).join("") +
-    `<dt>in short</dt><dd>${describeTraits(a.genome.traits)}</dd>`;
+    TRAIT_KEYS.map(
+      (k) => `<dt>${k}</dt><dd>${a.traits[k].toFixed(2)}<span class="hint"> (born ${a.genome.traits[k].toFixed(2)})</span>
+        <div class="bar"><i style="width:${a.traits[k] * 100}%"></i><b style="left:${a.genome.traits[k] * 100}%"></b></div></dd>`,
+    ).join("") + `<dt>in short</dt><dd>${describeTraits(a.traits)}</dd>`;
+  const g = engine.group(a);
+  const feeling = (v: number) => (v > 0.6 ? "devoted" : v > 0.3 ? "fond" : v > 0 ? "warm" : v > -0.3 ? "wary" : v > -0.6 ? "dislikes" : "hates");
+  const bonds = [...a.bonds.entries()]
+    .filter(([id, v]) => Math.abs(v) > 0.12 && engine.agents.has(id))
+    .sort((x, y) => Math.abs(y[1]) - Math.abs(x[1]))
+    .slice(0, 6)
+    .map(([id, v]) => `${link(id)} <span class="hint">${feeling(v)}</span>`);
+  $("insSocial").innerHTML = `
+    <dt>Follows</dt><dd>${a.follows !== null ? link(a.follows) : "nobody"}${a.followLockedUntil > engine.tick ? ` <span class="hint">(its own choice)</span>` : ""}</dd>
+    <dt>Followers</dt><dd>${a.followers} direct, ${a.influence} in all</dd>
+    <dt>Organization</dt><dd>${g ? `<span class="swatch" style="background:hsl(${groupHue(g.id)},65%,58%)"></span> ${escapeHtml(g.name)}${g.leaderId === a.id ? ` <b>(leader)</b>${g.heirId !== null ? ` · heir ${link(g.heirId)}` : " · no heir named"}` : g.heirId === a.id ? " <b>(named heir)</b>" : ""}` : "none"}</dd>
+    <dt>Bonds</dt><dd>${bonds.join(", ") || "none strong"}</dd>
+    <dt>Culture</dt><dd>${cultureChips(a.culture) || "<span class=\"hint\">no pull from a group</span>"}</dd>
+    <dt>Faith</dt><dd>${faithHtml(a)}</dd>
+    <dt>Tongue</dt><dd>${(() => { const tl = engine.languages.get(a.tribe); if (!tl) return "—"; const d = Math.sqrt(a.lang.reduce((s, v, k) => s + (v - tl[k]) ** 2, 0)); return d < 0.15 ? `the ${escapeHtml(a.tribe)} tongue` : d < 0.3 ? `a dialect drifting from the ${escapeHtml(a.tribe)} tongue` : "a tongue of its own, far from its people's"; })()}</dd>
+    <dt>Materials</dt><dd>${["ore", "clay", "herbs"].filter((_, i) => a.resourcesSeen & (1 << i)).join(", ") || "none seen"}${a.renown ? ` · ${a.renown} discover${a.renown === 1 ? "y" : "ies"}` : ""}</dd>`;
+  $("insKnow").innerHTML = DOMAINS.map((d) => {
+    const l = levelOf(a.understanding[d]);
+    return `<dt>${TRUTHS[d].label}</dt><dd>level ${l}<div class="bar"><i style="width:${progressOf(a.understanding[d]) * 100}%"></i></div>${l ? `<span class="hint">${escapeHtml(truthAt(d, l))}</span>` : ""}</dd>`;
+  }).join("");
+  $("insBeliefs").innerHTML = a.beliefs.length
+    ? `<h4>Beliefs <span class="hint">(it can't tell which are true)</span></h4><ul class="beliefs">${a.beliefs.map(beliefHtml).join("")}</ul>`
+    : "";
   $("insMemory").innerHTML = a.memory.length ? a.memory.slice().reverse().map((m) => `<li>${escapeHtml(m)}</li>`).join("") : `<li class="hint">Nothing yet.</li>`;
+}
+
+/** Lifespan bar split into the four stages, with a marker at the agent's current age. */
+function stageBar(a: Agent) {
+  const p = engine.params;
+  const bounds = [0, p.childhoodEnd, p.adolescenceEnd, p.elderhoodStart, 1];
+  const segs = STAGES.map((st, i) => `<i style="width:${(bounds[i + 1] - bounds[i]) * 100}%;background:${STAGE_COLORS[st]};opacity:.55"></i>`).join("");
+  return `${segs}<b style="left:${Math.min(100, (a.age / a.lifespan) * 100)}%"></b>`;
+}
+
+function faithHtml(a: Agent) {
+  const r = engine.religionOf(a);
+  const deeds = (Object.entries(a.ledger) as [Deed, number][]).filter(([, n]) => n > 0).sort((x, y) => y[1] - x[1]).slice(0, 4).map(([d, n]) => `${DEED_TEXT[d]} ×${n}`).join(", ");
+  if (!r) return `none${deeds ? `<br/><span class="hint">deeds: ${deeds}</span>` : ""}`;
+  const { verdict } = judge(r.code, a.ledger);
+  const fate = verdict === "heaven" ? `trusts it is bound for ${r.heaven}` : verdict === "hell" ? `fears it is bound for ${r.hell}` : "uncertain of its fate";
+  return `${escapeHtml(r.name)} <span class="hint">faith ${a.faith.toFixed(2)}</span><br/><span class="hint">${fate}${deeds ? ` · deeds: ${deeds}` : ""}</span>`;
+}
+
+/** Compact "+coop −greed" style summary of a trait shift. */
+function cultureChips(t: Partial<Record<string, number>>, scale = 1) {
+  return Object.entries(t)
+    .filter(([, v]) => Math.abs((v ?? 0) * scale) >= 0.02)
+    .sort((x, y) => Math.abs(y[1]!) - Math.abs(x[1]!))
+    .map(([k, v]) => `<span class="chip-sm">${v! > 0 ? "+" : "−"}${k.slice(0, 5)}</span>`)
+    .join("");
+}
+
+function beliefHtml(b: { text: string; kind: string; accurate: boolean; author: string }) {
+  const tag = b.kind === "meaning" ? `<span class="tag meaning">meaning</span>` : b.accurate ? `<span class="tag truth">true · ${b.kind}</span>` : `<span class="tag myth">myth · ${b.kind}</span>`;
+  return `<li>${tag} “${escapeHtml(b.text)}” <span class="hint">— ${escapeHtml(b.author)}</span></li>`;
 }
 
 // --- Chronicle
 
-const LOG_KINDS: LogEntry["kind"][] = ["world", "birth", "death", "fight", "share", "speech", "mind", "system"];
-const logShow = new Set<LogEntry["kind"]>(["world", "birth", "death", "fight", "speech", "system", "mind"]);
+const LOG_KINDS: LogEntry["kind"][] = ["world", "invention", "society", "insight", "speech", "birth", "death", "fight", "trade", "share", "mind", "system"];
+const logShow = new Set<LogEntry["kind"]>(["world", "invention", "society", "insight", "speech", "birth", "death", "fight", "trade", "system", "mind"]);
 $("logFilters").innerHTML = LOG_KINDS.map((k) => `<label><input type="checkbox" data-kind="${k}" ${logShow.has(k) ? "checked" : ""}/>${k}</label>`).join("");
 $("logFilters").onchange = (e) => {
   const el = e.target as HTMLInputElement;
@@ -602,18 +804,79 @@ function renderLog(force: boolean) {
 // --- Charts
 
 const TRAIT_COLORS = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#9085e9"];
-const popChart = new TimeChart($<HTMLCanvasElement>("chartPop"), "line");
+const popChart = new TimeChart($<HTMLCanvasElement>("chartPop"), "stack");
 const traitChart = new TimeChart($<HTMLCanvasElement>("chartTraits"), "line", { yMax: 1, format: (v) => v.toFixed(2) });
+const knowChart = new TimeChart($<HTMLCanvasElement>("chartKnow"), "line", { format: (v) => v.toFixed(1) });
+const genChart = new TimeChart($<HTMLCanvasElement>("chartGen"), "line", { format: (v) => v.toFixed(1), xLabel: (g) => `gen ${g}` });
+const trustChart = new TimeChart($<HTMLCanvasElement>("chartTrust"), "line", { yMax: 1, format: (v) => `${Math.round(v * 100)}%` });
 const tribeChart = new TimeChart($<HTMLCanvasElement>("chartTribes"), "stack");
+const civChart = new TimeChart($<HTMLCanvasElement>("chartCiv"), "line", { yMax: 1, format: (v) => `${Math.round(v * 100)}%` });
+const divChart = new TimeChart($<HTMLCanvasElement>("chartDiv"), "line");
+const lifeChart = new TimeChart($<HTMLCanvasElement>("chartLife"), "line");
+const orgChart = new TimeChart($<HTMLCanvasElement>("chartOrg"), "line", { yMax: 1, format: (v) => `${Math.round(v * 100)}%` });
 
 function renderCharts() {
   if ($("tab-charts").hidden) return;
   const stats = engine.stats;
   const step = Math.max(1, Math.ceil(stats.length / 300));
-  const pts = stats.filter((_, i) => i % step === 0 || i === stats.length - 1);
+  const idx = stats.map((_, i) => i).filter((i) => i % step === 0 || i === stats.length - 1);
+  const pts = idx.map((i) => stats[i]);
   const ticks = pts.map((s) => s.tick);
-  popChart.set(ticks, [{ label: "Population", color: "#3987e5", values: pts.map((s) => s.population) }]);
+  popChart.set(ticks, STAGES.map((st) => ({ label: st, color: STAGE_COLORS[st], values: pts.map((s) => s.stages?.[st] ?? 0) })));
   traitChart.set(ticks, TRAIT_KEYS.map((k, i) => ({ label: k, color: TRAIT_COLORS[i], values: pts.map((s) => s.traits[k]) })));
+  knowChart.set(ticks, [
+    { label: "Average person", color: "#3987e5", values: pts.map((s) => s.knowledge) },
+    { label: "Best tribe's canon", color: "#d95926", values: pts.map((s) => s.canon) },
+  ]);
+  const gens = engine.knowledgeGenerations().filter((g) => g.n >= 2);
+  genChart.set(gens.map((g) => g.generation), [{ label: "Lifetime knowledge", color: "#199e70", values: gens.map((g) => g.avg) }]);
+  // Age at death averaged over a trailing window, since deaths are lumpy tick to tick.
+  let lastAge = 0;
+  const deathAge = idx.map((i) => {
+    let sum = 0;
+    let n = 0;
+    for (let j = Math.max(0, i - 60); j <= i; j++) {
+      sum += stats[j].deathAgeSum ?? 0;
+      n += stats[j].deaths;
+    }
+    return n ? (lastAge = sum / n) : lastAge;
+  });
+  divChart.set(ticks, [
+    { label: "Peoples", color: "#3987e5", values: pts.map((s) => s.tribeCount ?? 0) },
+    { label: "Faiths", color: "#199e70", values: pts.map((s) => s.religions ?? 0) },
+    { label: "Tongues", color: "#c98500", values: pts.map((s) => s.languages ?? 0) },
+    { label: "Norms", color: "#d55181", values: pts.map((s) => s.norms ?? 0) },
+  ]);
+  civChart.set(ticks, [
+    { label: "Inventions known (best tribe, of 16)", color: "#3987e5", values: pts.map((s) => (s.techs ?? 0) / 16) },
+    { label: "Literate", color: "#199e70", values: pts.map((s) => s.literacy ?? 0) },
+    { label: "Farm", color: "#c98500", values: pts.map((s) => s.farmers ?? 0) },
+    { label: "Researching", color: "#d55181", values: pts.map((s) => s.researchers ?? 0) },
+  ]);
+  lifeChart.set(ticks, [
+    { label: "Life expectancy", color: "#199e70", values: pts.map((s) => s.lifeExpectancy ?? 0) },
+    { label: "Age at death", color: "#d95926", values: deathAge },
+  ]);
+  orgChart.set(ticks, [
+    { label: "In an organization", color: "#d55181", values: pts.map((s) => s.inGroups ?? 0) },
+    { label: "Follow someone", color: "#3987e5", values: pts.map((s) => s.following ?? 0) },
+    { label: "Largest org's share", color: "#c98500", values: pts.map((s) => (s.population ? (s.largestGroup ?? 0) / s.population : 0)) },
+  ]);
+  // Honest-trade share over a trailing window of 60 ticks.
+  const honest = idx.map((i) => {
+    let t = 0;
+    let b = 0;
+    for (let j = Math.max(0, i - 60); j <= i; j++) {
+      t += stats[j].trades ?? 0;
+      b += stats[j].betrayals ?? 0;
+    }
+    return t ? 1 - b / t : NaN;
+  });
+  let lastHonest = 1;
+  trustChart.set(ticks, [
+    { label: "Trades honoured", color: "#199e70", values: honest.map((v) => (Number.isNaN(v) ? lastHonest : (lastHonest = v))) },
+    { label: "Average standing", color: "#c98500", values: pts.map((s) => s.avgReputation ?? 0.5) },
+  ]);
   // Largest tribes by peak size; the rest fold into "Other".
   const peak = new Map<string, number>();
   for (const s of pts) for (const [t, n] of Object.entries(s.tribes)) peak.set(t, Math.max(peak.get(t) ?? 0, n));
@@ -628,13 +891,209 @@ function renderCharts() {
   tribeChart.set(ticks, series);
 }
 
+// --- Society: organizations, tribes, models, canon and culture
+
+let lastSociety = 0;
+function renderSociety(force = false) {
+  const box = $("tab-society");
+  if (box.hidden) return;
+  if (!force && (performance.now() - lastSociety < 1000 || box.contains(document.activeElement))) return;
+  lastSociety = performance.now();
+  const counts = engine.tribeCounts();
+  const tribes = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+  if (!tribes.length) {
+    box.innerHTML = `<div class="empty">No one is left.</div>`;
+    return;
+  }
+  const link = (id: number) => {
+    const x = engine.findAgent(id);
+    return x ? `<span class="link" data-agent="${x.id}">${escapeHtml(x.name)}</span>` : "?";
+  };
+  const groups = [...engine.groups.values()].sort((a, b) => b.members.size - a.members.size);
+  const orgs = groups.length
+    ? groups
+        .slice(0, 12)
+        .map((g) => {
+          const members = [...g.members].map((id) => engine.agents.get(id)).filter((m): m is Agent => !!m);
+          const byTribe: Record<string, number> = {};
+          for (const m of members) byTribe[m.tribe] = (byTribe[m.tribe] ?? 0) + 1;
+          return `<div class="org">
+            <div class="tribe-head"><span class="swatch" style="background:hsl(${groupHue(g.id)},65%,58%)"></span><b>${escapeHtml(g.name)}</b>
+              <span class="hint">${g.members.size} members · since t${g.foundedTick}</span></div>
+            ${g.purpose ? `<div class="purpose">“${escapeHtml(g.purpose)}”</div>` : ""}
+            ${g.overlordId !== null ? `<div class="hint">${g.relation === "vassal" ? "Pays tribute to" : "Allied under"} ${escapeHtml(engine.groups.get(g.overlordId)?.name ?? "?")}</div>` : ""}
+            ${(() => { const subs = [...engine.groups.values()].filter((x) => x.overlordId === g.id); return subs.length ? `<div class="hint">Rules ${subs.length} (${subs.filter((x) => x.relation === "vassal").length} vassals, ${subs.filter((x) => x.relation === "ally").length} allies)</div>` : ""; })()}
+            <div class="hint">${g.war ? `<span class="crisis">⚔ At war with ${escapeHtml(g.war.name)} since t${g.war.since}</span>` : g.aim === "research" && g.project ? `Researching <b>${TECHS[g.project.tech].name}</b> together — ${Math.round((g.project.progress / TECHS[g.project.tech].cost) * 100)}%` : g.aim ? `Aim: ${g.aim}` : "No shared aim"}</div>
+            ${g.crisis ? `<div class="crisis">⚔ In crisis since t${g.crisis.since}: ${g.crisis.claimants.map((id) => link(id)).join(" vs ")} — ${escapeHtml(g.crisis.reason)}</div>` : ""}
+            <div class="hint">Led by ${g.crisis ? "no one (contested)" : link(g.leaderId)}${(engine.agents.get(g.leaderId)?.frailty ?? 0) > 0.65 ? " (frail)" : ""} · heir ${g.heirId !== null ? link(g.heirId) : "none named"} · store ${g.store.rations} rations ·
+              ${Object.entries(byTribe).map(([t, n]) => `${n} ${escapeHtml(t)}`).join(", ")}</div>
+            <details><summary>${g.leaders.length} leader${g.leaders.length === 1 ? "" : "s"} so far</summary><ul class="truths">${g.leaders
+              .slice(-8)
+              .reverse()
+              .map((l) => `<li>${link(l.id)} from t${l.from} — ${escapeHtml(l.how)}</li>`)
+              .join("")}</ul></details>
+            ${g.norms.length ? `<ul class="beliefs">${g.norms.map((n) => `<li>“${escapeHtml(n.text)}” ${n.effects ? cultureChips(n.effects) : `<span class="chip-sm">judging…</span>`} <span class="hint">— ${escapeHtml(n.author)}</span></li>`).join("")}</ul>` : ""}
+          </div>`;
+        })
+        .join("")
+    : `<p class="hint">No organizations yet. They form when someone gains a following, or when a mind founds one.</p>`;
+  const believers = new Map<number, number>();
+  for (const a of engine.agents.values()) if (a.religion !== null) believers.set(a.religion, (believers.get(a.religion) ?? 0) + 1);
+  const faiths = [...believers.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([id, n]) => {
+    const r = engine.religions.get(id)!;
+    const dead = engine.hallOfDead.filter((d) => d.religion === r.name);
+    return `<div class="org"><div class="tribe-head"><span class="swatch" style="background:hsl(${groupHue(id * 3 + 1)},65%,60%)"></span><b>${escapeHtml(r.name)}</b>
+      <span class="hint">${n} believers · founded t${r.founded} by ${escapeHtml(r.founderName)}${r.watchful ? " · a watchful god" : ""}</span></div>
+      <div class="purpose">“${escapeHtml(r.doctrine)}”</div>
+      <div class="hint">Of its dead, ${dead.filter((d) => d.verdict === "heaven").length} believed they would enter ${escapeHtml(r.heaven)}; ${dead.filter((d) => d.verdict === "hell").length} feared ${escapeHtml(r.hell)}.</div></div>`;
+  }).join("");
+  const hall = engine.hallOfDead.slice(-12).reverse().map((d) => `<li><b>${escapeHtml(d.name)}</b> <span class="hint">(${escapeHtml(d.tribe)}, t${d.tick})</span> — believed bound for <i>${escapeHtml(d.realm)}</i> <span class="hint">by ${escapeHtml(d.religion)}; ${escapeHtml(d.deeds)}</span></li>`).join("");
+  box.innerHTML =
+    `<h4 style="margin-top:0">Organizations (${groups.length})</h4>${orgs}` +
+    `<h4>Faiths (${believers.size})</h4>${faiths || `<p class="hint">No one holds a faith yet. Faiths arise among the grieving and the devout, and are spread by teaching.</p>`}` +
+    (hall ? `<details><summary>Hall of the Dead — what the departed believed awaited them</summary><ul class="truths">${hall}</ul></details>` : "") +
+    `<h4>Peoples</h4>` +
+    tribes
+      .map((t) => {
+        const members = [...engine.agents.values()].filter((a) => a.tribe === t);
+        const canon = engine.canons.get(t);
+        const model = engine.tribeModels.get(t) ?? "";
+        const rep = members.reduce((s, a) => s + a.reputation, 0) / members.length;
+        const levels = DOMAINS.map((d) => ({ d, l: canon ? levelOf(canon.understanding[d]) : 0 }));
+        const truths = levels.flatMap(({ d, l }) => Array.from({ length: Math.min(l, TRUTHS[d].truths.length) }, (_, i) => truthAt(d, i + 1)));
+        const beliefs = canon ? [...canon.beliefs].sort((x, y) => y.taught - x.taught).slice(0, 8) : [];
+        return `<section class="tribe">
+        <div class="tribe-head"><span class="swatch" style="background:${tribeColor(engine, t)}"></span><b>${escapeHtml(t)}</b>
+          <span class="hint">${members.length} alive · standing ${rep.toFixed(2)} · canon ${canon ? totalLevels(canon.understanding) : 0}</span></div>
+        <label class="field">Thinks with
+          <select data-tribe-model="${escapeHtml(t)}"><option value="">Default (${MODELS.find((m) => m.id === engine.params.model)?.label})</option>
+          ${MODELS.map((m) => `<option value="${m.id}" ${m.id === model ? "selected" : ""}>${m.label}</option>`).join("")}</select></label>
+        <div class="canon-levels">${levels.map(({ d, l }) => `<span title="${TRUTHS[d].label}">${TRUTHS[d].label.slice(0, 4)} <b>${l}</b></span>`).join("")}</div>
+        ${canon?.techs.size ? `<div class="hint">Inventions: ${[...canon.techs].map((t) => `<span class="chip-sm" title="${escapeHtml(TECHS[t].effect)}">${TECHS[t].name}</span>`).join("")}</div>` : ""}
+        <div class="hint">${members.filter((m) => m.fields.length).length} farm · ${members.reduce((x, m) => x + m.fields.length, 0)} fields</div>
+        ${truths.length ? `<details><summary>What the ${escapeHtml(t)} know (${truths.length})</summary><ul class="truths">${truths.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul></details>` : ""}
+        ${beliefs.length ? `<details open><summary>What they say</summary><ul class="beliefs">${beliefs.map(beliefHtml).join("")}</ul></details>` : ""}
+      </section>`;
+      })
+      .join("");
+}
+$("tab-society").addEventListener("change", (e) => {
+  const el = e.target as HTMLSelectElement;
+  const t = el.dataset.tribeModel;
+  if (t === undefined) return;
+  if (el.value) engine.tribeModels.set(t, el.value);
+  else engine.tribeModels.delete(t);
+  el.blur();
+  renderSociety(true);
+});
+$("tab-society").addEventListener("click", (e) => {
+  const id = (e.target as HTMLElement).dataset.agent;
+  if (id) {
+    selectedId = Number(id);
+    selectTab("inspect");
+    renderInspector(true);
+  }
+});
+
+// --- Annals: the historian's periodic analysis, with the numbers behind it
+
+let annalSig = "";
+function renderAnnals(force = false) {
+  const box = $("tab-annals");
+  const p = engine.params;
+  const hm = MODELS.find((m) => m.id === p.historianModel)?.label ?? p.historianModel;
+  $("annalStatus").textContent = mind.historianBusy
+    ? `The historian (${hm}) is writing…`
+    : mind.offline
+      ? "No API key: reports show the numbers' warning signs only."
+      : p.historianEvery
+        ? `${hm} · next report around tick ${(engine.annals.at(-1)?.tick ?? 0) + p.historianEvery}.`
+        : "Automatic reports are off.";
+  if (box.hidden) return;
+  const sig = engine.annals.map((x) => `${x.tick}:${x.status}`).join("|");
+  if (!force && sig === annalSig) return;
+  annalSig = sig;
+  const list = $("annals");
+  if (!engine.annals.length) {
+    list.innerHTML = `<div class="empty">No reports yet.<br/>The historian writes one every ${p.historianEvery || "—"} ticks, or press the button for one now.</div>`;
+    return;
+  }
+  list.innerHTML = [...engine.annals].reverse().map((x, i) => annalHtml(x, engine.annals.length - 1 - i)).join("");
+  // Small multiples of the key series up to the report, with its period shaded.
+  for (const [i, x] of engine.annals.entries()) {
+    const el = document.getElementById(`minis-${i}`);
+    if (!el) continue;
+    const upTo = engine.stats.filter((s) => s.tick <= x.tick);
+    const step = Math.max(1, Math.ceil(upTo.length / 120));
+    const pts = upTo.filter((_, j) => j % step === 0 || j === upTo.length - 1);
+    const ticks = pts.map((s) => s.tick);
+    const minis: [string, string, (s: (typeof pts)[number]) => number, { yMax?: number; format?: (v: number) => string }][] = [
+      ["Population", "#3987e5", (s) => s.population, {}],
+      ["Knowledge", "#199e70", (s) => s.knowledge, { format: (v) => v.toFixed(1) }],
+      ["In organizations", "#d55181", (s) => s.inGroups ?? 0, { yMax: 1, format: (v) => `${Math.round(v * 100)}%` }],
+      ["Average standing", "#c98500", (s) => s.avgReputation ?? 0.5, { yMax: 1, format: (v) => v.toFixed(2) }],
+    ];
+    minis.forEach(([label, color, f, o], k) => {
+      const c = el.querySelector<HTMLCanvasElement>(`canvas[data-k="${k}"]`)!;
+      new TimeChart(c, "line", { ...o, legend: false, highlightFrom: x.fromTick }).set(ticks, [{ label, color, values: pts.map(f) }]);
+    });
+  }
+}
+
+function annalHtml(x: AnnalEntry, i: number) {
+  const r = x.report;
+  const arrow = (d: string) => `<span class="arrow ${d}">${d === "up" ? "↑" : d === "down" ? "↓" : "→"}</span>`;
+  const minis = `<div class="minis" id="minis-${i}">${["Population", "Knowledge", "In organizations", "Average standing"]
+    .map((l, k) => `<div><h6>${l}</h6><div class="chart"><canvas data-k="${k}"></canvas></div></div>`)
+    .join("")}</div>`;
+  const signals = x.signals.length ? `<h5>Warning signs in the numbers</h5><ul class="signals">${x.signals.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ul>` : "";
+  if (!r)
+    return `<article class="annal"><div class="era">Ticks ${x.fromTick}–${x.tick}</div>
+      <h3 class="title">${x.status === "writing" ? "The historian is writing…" : x.status === "error" ? "The historian could not write this report" : "Snapshot"}</h3>
+      ${x.error ? `<p class="hint">${escapeHtml(x.error)}</p>` : ""}${minis}${signals}</article>`;
+  return `<article class="annal">
+    <div class="era">${escapeHtml(r.era)} · ticks ${x.fromTick}–${x.tick}${x.model ? ` · ${escapeHtml(MODELS.find((m) => m.id === x.model)?.label ?? x.model)}` : ""}</div>
+    <h3 class="title">${escapeHtml(r.title)}</h3>
+    ${minis}
+    ${r.narrative.split(/\n\s*\n/).map((para) => `<p>${escapeHtml(para)}</p>`).join("")}
+    ${r.review ? `<h5>How the last predictions held up</h5><p class="review">${escapeHtml(r.review)}</p>` : ""}
+    <h5>Trends</h5><ul>${r.trends.map((t) => `<li>${arrow(t.direction)}<b>${escapeHtml(t.label)}</b> — ${escapeHtml(t.detail)}</li>`).join("")}</ul>
+    ${r.leaders.length ? `<h5>Figures of the age</h5><ul>${r.leaders.map((l) => `<li><b>${agentLinkByName(l.name)}</b>, ${escapeHtml(l.role)} — ${escapeHtml(l.assessment)}</li>`).join("")}</ul>` : ""}
+    <h5>Risks</h5><ul>${r.risks.map((k) => `<li><span class="lk ${k.likelihood}">${k.likelihood}</span><b>${escapeHtml(k.label)}</b> — ${escapeHtml(k.detail)}</li>`).join("")}</ul>
+    <h5>Opportunities</h5><ul>${r.opportunities.map((o) => `<li><b>${escapeHtml(o.label)}</b> — ${escapeHtml(o.detail)}</li>`).join("")}</ul>
+    <h5>Predictions</h5><ul>${r.predictions.map((pr) => `<li>• ${escapeHtml(pr)}</li>`).join("")}</ul>
+    ${signals}
+  </article>`;
+}
+
+/** Names in reports become links when the agent can still be found. */
+function agentLinkByName(name: string) {
+  const a = [...engine.agents.values()].find((x) => x.name === name) ?? [...engine.graveyard].reverse().find((x) => x.name === name);
+  return a ? `<span class="link" data-agent="${a.id}">${escapeHtml(name)}</span>${a.alive ? "" : " †"}` : escapeHtml(name);
+}
+
+$("annalNow").onclick = () => {
+  mind.writeAnnal(engine);
+  renderAnnals(true);
+};
+$("tab-annals").addEventListener("click", (e) => {
+  const id = (e.target as HTMLElement).dataset.agent;
+  if (id) {
+    selectedId = Number(id);
+    selectTab("inspect");
+    renderInspector(true);
+  }
+});
+
 // --- Tabs
 
 function selectTab(name: string) {
   for (const b of $("tabs").querySelectorAll("button")) b.classList.toggle("active", b.dataset.tab === name);
-  for (const t of ["inspect", "chronicle", "charts"]) $(`tab-${t}`).hidden = t !== name;
+  for (const t of ["inspect", "society", "annals", "chronicle", "charts"]) $(`tab-${t}`).hidden = t !== name;
   if (name === "chronicle") renderLog(true);
   if (name === "charts") renderCharts();
+  if (name === "society") renderSociety(true);
+  if (name === "annals") renderAnnals(true);
 }
 $("tabs").onclick = (e) => {
   const b = (e.target as HTMLElement).closest("button");
@@ -642,6 +1101,8 @@ $("tabs").onclick = (e) => {
 };
 
 $<HTMLInputElement>("trails").onchange = (e) => (showTrails = (e.target as HTMLInputElement).checked);
+$<HTMLInputElement>("resources").onchange = (e) => (showResources = (e.target as HTMLInputElement).checked);
+$<HTMLInputElement>("ties").onchange = (e) => (showTies = (e.target as HTMLInputElement).checked);
 $<HTMLSelectElement>("colorMode").onchange = (e) => (colorMode = (e.target as HTMLSelectElement).value as ColorMode);
 
 // --- New world dialog
@@ -823,6 +1284,7 @@ function renderPetri() {
       (f, i) => `<div class="founder" data-i="${i}">
         <div class="row"><input type="text" data-f="name" value="${escapeHtml(f.name)}" /><input type="color" data-f="color" value="${f.color}" /></div>
         ${TRAIT_KEYS.map((k) => `<label class="slider">${k} <span data-out="${k}">${f.traits[k].toFixed(2)}</span><input type="range" data-trait="${k}" min="0" max="1" step="0.05" value="${f.traits[k]}" /></label>`).join("")}
+        <label class="field">Thinks with <select data-f="model"><option value="">Default model</option>${MODELS.map((m) => `<option value="${m.id}" ${m.id === f.model ? "selected" : ""}>${m.label}</option>`).join("")}</select></label>
         <label class="field">Creed <textarea rows="4" data-f="creed" placeholder="What this founder believes and how it should live…">${escapeHtml(f.creed)}</textarea></label>
       </div>`,
     )
@@ -856,6 +1318,7 @@ $("petriFounders").oninput = (e) => {
   if (el.dataset.f === "name") f.name = el.value.trim() || f.name;
   if (el.dataset.f === "color") f.color = el.value;
   if (el.dataset.f === "creed") f.creed = el.value;
+  if (el.dataset.f === "model") f.model = el.value;
 };
 $("petriStart").onclick = () => {
   dialog.close();

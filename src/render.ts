@@ -1,8 +1,15 @@
-import type { HazardKind, TraitKey } from "../shared/types";
+import type { Good, HazardKind, Stage, TraitKey } from "../shared/types";
 import type { Agent, Engine } from "./sim/engine";
+import { totalLevels } from "./sim/knowledge";
 import { TERRAIN } from "./sim/world";
 
-export type ColorMode = "tribe" | TraitKey | "energy" | "age";
+export type ColorMode = "tribe" | TraitKey | "energy" | "age" | "stage" | "reputation" | "knowledge" | "craft" | "group" | "religion";
+
+/** Categorical colours (reference palette, dark steps) for life stages and crafts. */
+export const STAGE_COLORS: Record<Stage, string> = { child: "#199e70", adolescent: "#c98500", adult: "#3987e5", elder: "#d55181" };
+/** Three hues pass every colour-vision pairing on the board; weapon-makers are told apart by shape (a pale diamond) instead. */
+export const CRAFT_COLORS: Record<Good, string> = { rations: "#d95926", tools: "#3987e5", medicine: "#199e70", weapons: "#f0efec" };
+const STAGE_SIZE: Record<Stage, number> = { child: 0.24, adolescent: 0.32, adult: 0.38, elder: 0.38 };
 
 const HAZARD_STYLE: Record<HazardKind, string> = {
   fire: "rgba(255, 110, 40, 0.55)",
@@ -17,6 +24,8 @@ export interface Overlay {
   hover: { x: number; y: number; size: number } | null;
   selectedId: number | null;
   trails: boolean;
+  ties: boolean;
+  resources: boolean;
 }
 
 export class Renderer {
@@ -61,6 +70,31 @@ export class Renderer {
         ctx.fillRect(x * cell, y * cell, cell, cell);
       }
 
+    // Fields: tilled rows, green while growing and gold when ripe.
+    if (w.fieldCount)
+      for (let i = 0; i < w.fieldOwner.length; i++) {
+        if (!w.fieldOwner[i]) continue;
+        const x = (i % w.width) * cell;
+        const y = Math.floor(i / w.width) * cell;
+        const c = w.crop[i];
+        ctx.fillStyle = `hsl(${105 - c * 60}, ${45 + c * 25}%, ${26 + c * 22}%)`;
+        ctx.fillRect(x, y, cell, cell);
+        if (cell >= 8) {
+          ctx.fillStyle = "rgba(40,28,10,0.45)";
+          for (let r = 1; r < 4; r++) ctx.fillRect(x, y + (r * cell) / 4, cell, 1);
+        }
+      }
+
+    // Resources: small marks so regional advantages (ore, clay, herbs) are visible.
+    if (overlay.resources)
+      for (let i = 0; i < w.resource.length; i++) {
+        const r = w.resource[i];
+        if (!r) continue;
+        ctx.fillStyle = r === 1 ? "#c9c7c2" : r === 2 ? "#c98a4a" : "#7fd08a";
+        const s = Math.max(2, cell * 0.28);
+        ctx.fillRect((i % w.width) * cell + (cell - s) / 2, Math.floor(i / w.width) * cell + (cell - s) / 2, s, s);
+      }
+
     for (const h of w.hazards) {
       ctx.fillStyle = HAZARD_STYLE[h.kind];
       ctx.fillRect(h.rect.x * cell, h.rect.y * cell, h.rect.w * cell, h.rect.h * cell);
@@ -76,16 +110,60 @@ export class Renderer {
       }
 
     const r = Math.max(1.5, cell * 0.38);
+
+    // Ties: a line from each follower to whom it follows, coloured by the follower's organization.
+    if (overlay.ties) {
+      ctx.lineWidth = 1;
+      for (const a of engine.agents.values()) {
+        if (a.follows === null) continue;
+        const f = engine.agents.get(a.follows);
+        if (!f) continue;
+        ctx.strokeStyle = a.groupId !== null ? `hsla(${groupHue(a.groupId)}, 70%, 65%, 0.55)` : "rgba(240,239,236,0.25)";
+        ctx.beginPath();
+        ctx.moveTo(a.x * cell + cell / 2, a.y * cell + cell / 2);
+        ctx.lineTo(f.x * cell + cell / 2, f.y * cell + cell / 2);
+        ctx.stroke();
+      }
+    }
+
     for (const a of engine.agents.values()) {
       const cx = a.x * cell + cell / 2;
       const cy = a.y * cell + cell / 2;
+      const ra = Math.max(1.2, cell * STAGE_SIZE[a.stage]);
       ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      if (mode === "craft" && a.craft === "weapons") {
+        ctx.moveTo(cx, cy - ra * 1.25);
+        ctx.lineTo(cx + ra * 1.25, cy);
+        ctx.lineTo(cx, cy + ra * 1.25);
+        ctx.lineTo(cx - ra * 1.25, cy);
+        ctx.closePath();
+      } else ctx.arc(cx, cy, ra, 0, Math.PI * 2);
       ctx.fillStyle = agentColor(a, mode, engine);
+      ctx.globalAlpha = a.frailty > 0.65 ? 0.55 : 1;
       ctx.fill();
+      ctx.globalAlpha = 1;
       if (cell >= 8) {
-        ctx.lineWidth = 1;
-        ctx.strokeStyle = a.sick ? "#b6f05a" : "rgba(0,0,0,0.55)";
+        // Elders wear a pale ring; the sick a green one.
+        ctx.lineWidth = a.stage === "elder" ? 1.5 : 1;
+        ctx.strokeStyle = a.sick ? "#b6f05a" : a.stage === "elder" ? "rgba(240,239,236,0.85)" : "rgba(0,0,0,0.55)";
+        ctx.stroke();
+      }
+      // Leaders of organizations wear a gold ring.
+      const g = a.groupId !== null ? engine.groups.get(a.groupId) : undefined;
+      if (g?.crisis && g.crisis.claimants.includes(a.id) && (overlay.ties || mode === "group")) {
+        ctx.strokeStyle = "#e66767";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([3, 2]);
+        ctx.beginPath();
+        ctx.arc(cx, cy, ra + 2.5, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      if (g && g.leaderId === a.id && (overlay.ties || mode === "group")) {
+        ctx.strokeStyle = "#e0b84f";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, ra + 2.5, 0, Math.PI * 2);
         ctx.stroke();
       }
       if (a.thinking && cell >= 8) {
@@ -147,10 +225,17 @@ export function tribeColor(engine: Engine, tribe: string): string {
 
 function agentColor(a: Agent, mode: ColorMode, engine: Engine): string {
   if (mode === "tribe") return `hsl(${a.genome.hue}, 72%, 60%)`;
+  if (mode === "stage") return STAGE_COLORS[a.stage];
+  if (mode === "craft") return a.craft ? CRAFT_COLORS[a.craft] : "#6b6a66";
+  if (mode === "group") return a.groupId !== null ? `hsl(${groupHue(a.groupId)}, 65%, 58%)` : "#6b6a66";
+  if (mode === "religion") return a.religion !== null ? `hsla(${groupHue(a.religion * 3 + 1)}, 65%, 60%, ${0.35 + a.faith * 0.65})` : "#6b6a66";
   let v: number;
   if (mode === "energy") v = a.energy / engine.params.maxEnergy;
   else if (mode === "age") v = a.age / a.lifespan;
-  else v = a.genome.traits[mode];
+  else if (mode === "reputation") v = a.reputation;
+  else if (mode === "knowledge") v = totalLevels(a.understanding) / 15;
+  // Trait modes show the expressed temperament (phenotype).
+  else v = a.traits[mode];
   // Sequential single-hue ramp: light (low) to deep (high).
   v = Math.max(0, Math.min(1, v));
   return `hsl(28, ${45 + v * 50}%, ${88 - v * 50}%)`;
@@ -172,4 +257,9 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.arcTo(x, y + h, x, y, r);
   ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
+}
+
+/** A stable, well-spread hue per organization (golden-angle steps). */
+export function groupHue(id: number): number {
+  return (id * 137.508) % 360;
 }

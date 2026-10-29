@@ -153,8 +153,72 @@ input[type="range"] {
 .layout {
   flex: 1;
   display: grid;
-  grid-template-columns: 270px 1fr 340px;
+  grid-template-columns: var(--left-w, 270px) 1fr var(--right-w, 380px);
   min-height: 0;
+  transition: grid-template-columns 0.15s ease;
+}
+/* Collapsed sidebars give the board the room. */
+.layout.no-left {
+  --left-w: 0px;
+}
+.layout.no-right {
+  --right-w: 0px;
+}
+.layout.no-left .panel.left,
+.layout.no-right .panel.right {
+  visibility: hidden;
+  border: none;
+  overflow: hidden;
+}
+.panel-toggle {
+  font-size: 16px;
+  padding: 2px 8px;
+  color: var(--text-2);
+}
+.panel-toggle:hover {
+  color: var(--text);
+}
+
+/* Bottom status bar: costs and minds at a glance */
+.statusbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 18px;
+  padding: 5px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 12px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.statusbar .item b {
+  color: var(--text);
+  font-weight: 600;
+}
+.statusbar .meter {
+  display: inline-block;
+  width: 90px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  vertical-align: middle;
+  margin: 0 6px;
+  overflow: hidden;
+}
+.statusbar .meter i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.statusbar .meter.over i {
+  background: var(--danger);
+}
+.statusbar .err {
+  color: var(--danger);
+}
+.statusbar .spacer {
+  flex: 1;
 }
 .panel {
   background: var(--surface);
@@ -591,4 +655,242 @@ dialog::backdrop {
 }
 input:disabled {
   opacity: 0.45;
+}
+
+/* Stages, knowledge, culture */
+.badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #111;
+  border-radius: 999px;
+  padding: 1px 8px;
+  margin-left: 4px;
+}
+.bar {
+  position: relative;
+}
+.bar > b {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 10px;
+  background: var(--text);
+  transform: translateX(-1px);
+}
+.bar.stages {
+  display: flex;
+  overflow: visible;
+}
+.bar.stages > i {
+  border-radius: 0;
+}
+.stage-minds {
+  display: grid;
+  grid-template-columns: 12px auto 1fr 1fr;
+  gap: 4px 6px;
+  align-items: center;
+  margin-top: 6px;
+}
+.stage-minds select {
+  padding: 3px 4px;
+  font-size: 12px;
+}
+.tag {
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 4px;
+  padding: 0 5px;
+  margin-right: 4px;
+  white-space: nowrap;
+}
+.tag.truth {
+  background: rgba(25, 158, 112, 0.25);
+  color: #6fd6ad;
+}
+.tag.myth {
+  background: rgba(230, 103, 103, 0.22);
+  color: #f0a0a0;
+}
+.tag.meaning {
+  background: rgba(213, 81, 129, 0.22);
+  color: #f0a6c2;
+}
+.beliefs,
+.truths {
+  margin: 4px 0 10px;
+  padding-left: 16px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.tribe {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 0 10px;
+}
+.tribe-head {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.canon-levels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 8px 0 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.canon-levels b {
+  color: var(--text);
+}
+details summary {
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: 12px;
+  margin-top: 4px;
+}
+.log li.insight {
+  color: #6fd6ad;
+}
+.log li.trade {
+  color: #e8c27a;
+}
+
+/* Annals */
+.annals-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.annal {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.annal .era {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+}
+.annal h3.title {
+  font-size: 15px;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+  margin: 2px 0 2px;
+}
+.annal p {
+  color: var(--text-2);
+  line-height: 1.5;
+  margin: 8px 0;
+}
+.annal h5 {
+  margin: 12px 0 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.annal ul {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+}
+.annal li {
+  margin: 4px 0;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+.annal li b {
+  color: var(--text);
+}
+.minis {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 10px;
+  margin-top: 8px;
+}
+.minis .chart canvas {
+  height: 64px;
+}
+.minis h6 {
+  margin: 0;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.arrow {
+  display: inline-block;
+  width: 14px;
+  font-weight: 700;
+}
+.arrow.up {
+  color: #6fd6ad;
+}
+.arrow.down {
+  color: #f0a0a0;
+}
+.arrow.steady {
+  color: var(--muted);
+}
+.lk {
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 4px;
+  padding: 0 5px;
+  margin-right: 4px;
+}
+.lk.high {
+  background: rgba(230, 103, 103, 0.25);
+  color: #f0a0a0;
+}
+.lk.medium {
+  background: rgba(201, 133, 0, 0.25);
+  color: #e8c27a;
+}
+.lk.low {
+  background: rgba(141, 140, 134, 0.2);
+  color: var(--text-2);
+}
+.signals {
+  border-left: 3px solid var(--muted);
+  padding-left: 8px;
+}
+.review {
+  font-style: italic;
+}
+
+/* Society */
+.org {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 0 10px;
+}
+.org .purpose {
+  color: var(--text-2);
+  font-style: italic;
+  margin: 2px 0 4px;
+}
+.chip-sm {
+  font-size: 10px;
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-left: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+}
+.log li.invention {
+  color: #f2d27a;
+}
+.crisis {
+  color: #f0a0a0;
+  font-size: 12px;
+  margin: 2px 0 4px;
+}
+.log li.society {
+  color: #c9b8f0;
 }

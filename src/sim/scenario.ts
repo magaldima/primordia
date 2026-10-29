@@ -1,4 +1,4 @@
-import { HAZARDS, TERRAINS, TRAIT_KEYS, type Rect, type ScenarioSpec, type Traits } from "../../shared/types";
+import { HAZARDS, MODELS, TERRAINS, TRAIT_KEYS, type Rect, type ScenarioSpec, type Traits } from "../../shared/types";
 
 /**
  * Claude-generated scenarios are mostly right but not guaranteed to fit the board. Clamp rects,
@@ -26,6 +26,7 @@ export function sanitizeScenario(spec: ScenarioSpec, width: number, height: numb
       traits: traits(f.traits),
       spawn: rect(f.spawn),
       arriveAt: clampInt(f.arriveAt ?? 0, 0, 100000),
+      ...(f.model && MODELS.some((m) => m.id === f.model) ? { model: f.model } : {}),
     })),
     events: (spec.events ?? [])
       .filter((e) => e.kind === "narration" || HAZARDS.includes(e.kind))

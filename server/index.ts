@@ -2,7 +2,7 @@ import "dotenv/config";
 import express, { type NextFunction, type Request, type Response } from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { breed, hasCredentials, LlmError, scenario, think } from "./llm";
+import { breed, hasCredentials, historian, judge, LlmError, scenario, think } from "./llm";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
@@ -26,6 +26,8 @@ const wrap = (fn: (body: any) => Promise<unknown>) => async (req: Request, res: 
 
 app.post("/api/think", wrap(think));
 app.post("/api/breed", wrap(breed));
+app.post("/api/judge", wrap(judge));
+app.post("/api/historian", wrap(historian));
 app.post("/api/scenario", wrap(scenario));
 
 app.use("/api", (err: unknown, _req: Request, res: Response, _next: NextFunction) => {

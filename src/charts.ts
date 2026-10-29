@@ -20,7 +20,7 @@ export class TimeChart {
   constructor(
     private canvas: HTMLCanvasElement,
     private mode: "line" | "stack",
-    private opts: { yMax?: number; format?: (v: number) => string } = {},
+    private opts: { yMax?: number; format?: (v: number) => string; xLabel?: (x: number) => string; legend?: boolean; highlightFrom?: number } = {},
   ) {
     this.ctx = canvas.getContext("2d")!;
     const wrap = canvas.parentElement!;
@@ -29,7 +29,7 @@ export class TimeChart {
     wrap.appendChild(this.tooltip);
     this.legend = document.createElement("div");
     this.legend.className = "chart-legend";
-    wrap.insertBefore(this.legend, canvas);
+    if (opts.legend !== false) wrap.insertBefore(this.legend, canvas);
     canvas.addEventListener("pointermove", (e) => {
       const r = canvas.getBoundingClientRect();
       this.hoverX = e.clientX - r.left;
@@ -79,6 +79,15 @@ export class TimeChart {
     const X = (i: number) => pad.l + (i / (n - 1)) * pw;
     const Y = (v: number) => pad.t + ph - (v / yMax) * ph;
 
+    // Shade the period a report covers.
+    if (this.opts.highlightFrom !== undefined) {
+      const i0 = this.ticks.findIndex((t) => t >= this.opts.highlightFrom!);
+      if (i0 >= 0) {
+        ctx.fillStyle = "rgba(224,184,79,0.08)";
+        ctx.fillRect(X(i0), pad.t, X(n - 1) - X(i0), ph);
+      }
+    }
+
     // Recessive grid and axes.
     ctx.font = "10px ui-sans-serif, system-ui, sans-serif";
     ctx.fillStyle = "#8d8c86";
@@ -94,10 +103,11 @@ export class TimeChart {
       ctx.textAlign = "right";
       ctx.fillText(fmt(v), pad.l - 4, y + 3);
     }
+    const xl = this.opts.xLabel ?? ((x: number) => `t${x}`);
     ctx.textAlign = "left";
-    ctx.fillText(`t${this.ticks[0]}`, pad.l, H - 4);
+    ctx.fillText(xl(this.ticks[0]), pad.l, H - 4);
     ctx.textAlign = "right";
-    ctx.fillText(`t${this.ticks[n - 1]}`, W - pad.r, H - 4);
+    ctx.fillText(xl(this.ticks[n - 1]), W - pad.r, H - 4);
 
     if (this.mode === "stack") {
       for (let s = stacked.length - 1; s >= 0; s--) {
@@ -152,7 +162,8 @@ export class TimeChart {
         .slice(0, 8)
         .map((r) => `<div><i style="background:${r.s.color}"></i>${escapeHtml(r.s.label)}<b>${fmt(r.v)}</b></div>`)
         .join("");
-      this.tooltip.innerHTML = `<div class="tip-head">Tick ${this.ticks[i]}</div>${rows}`;
+      const head = this.opts.xLabel ? this.opts.xLabel(this.ticks[i]) : `Tick ${this.ticks[i]}`;
+      this.tooltip.innerHTML = `<div class="tip-head">${head}</div>${rows}`;
       this.tooltip.style.display = "block";
       const left = x + 12 + 160 > W ? x - 172 : x + 12;
       this.tooltip.style.left = `${left}px`;
